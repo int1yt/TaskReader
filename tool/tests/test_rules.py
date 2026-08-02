@@ -3,7 +3,10 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from datetime import datetime
+
 from task_reader.engine import TaskReader
+from task_reader.time_parser import TimeParser
 
 REF = "2026-08-02"  # 周日
 reader = TaskReader(ref=REF)
@@ -217,6 +220,79 @@ def test_header_default_time():
     print("ok 头部默认时间 →", ts)
 
 
+def test_this_weekday_forward():
+    # 今天是周日，"这周五"已过 → 应推到下周五，不返回过去日期
+    t = find(tasks("这周五交论文"), action="交", time="2026-08-07")
+    assert t, t
+    print("ok 这周五(已过) → 下周五", t["time"])
+
+
+def test_plain_weekday_forward():
+    t = find(tasks("周六下午要参加学术会议"), action="参加", time="2026-08-08 15:00")
+    assert t, t
+    print("ok 周六(已过) → 下周六", t["time"])
+
+
+def test_timeonly_keep_sameday():
+    # 纯时段（无日期）始终留在当天（含上下文继承的日期），不因时刻已过而跨天
+    tp = TimeParser(ref="2026-08-02", now=datetime(2026, 8, 2, 18, 0))
+    spans = tp.parse("下午")
+    assert spans and spans[0].date == "2026-08-02", spans
+    assert spans[0].time == "15:00", spans
+    print("ok 纯时段留当天 →", spans[0].date, spans[0].time)
+
+
+def test_weekday_past_datetime_push():
+    # 周几+时刻整体已过（周日晚上写"周日早上"）→ 推到下周同日
+    tp = TimeParser(ref="2026-08-02", now=datetime(2026, 8, 2, 18, 19))
+    spans = tp.parse("周日早上")
+    assert spans and spans[0].date == "2026-08-09", spans
+    assert spans[0].time == "07:00", spans
+    print("ok 周日早上(已过)推下周 →", spans[0].date, spans[0].time)
+
+
+def test_context_inherit():
+    # "下午"跟在"周六下午"后面 → 继承周六的日期 8.8，而不是今天
+    ts = tasks("周六下午要参加学术会议，下午看电影蜘蛛侠")
+    t = find(ts, action="看")
+    assert t and t["time"] == "2026-08-08 15:00", ts
+    print("ok 上下文继承(下午→周六) →", t["time"])
+
+
+def test_full_example_context():
+    ts = tasks("这周五交论文，周六下午开会，周日早上打球，下午看电影")
+    assert find(ts, action="交", time="2026-08-07"), ts
+    assert find(ts, action="开会", time="2026-08-08 15:00"), ts
+    assert find(ts, action="打球", time="2026-08-02 07:00"), ts  # ref 显式时 now=午夜，不推
+    assert find(ts, action="看", time="2026-08-02 15:00"), ts  # 继承周日(今天)
+    print("ok 整段上下文 →", [t["task"] for t in ts])
+
+
+def test_user_schedule():
+    # 用户真实清单：动词末尾、中文数字分钟、英文缩写任务、要X备注、编号教楼
+    ts = tasks("准备明天英语Quiz，Ayse的pre准备，明天HZM课预习，一期大创申报，"
+               "明天给程彤发消息要电话号码和邮箱，明天下午五点二十去二教楼做实验，"
+               "周三中午有加分讲座，区域国别编译")
+    assert len(ts) == 8, ts
+    t1 = find(ts, action="准备", time="2026-08-03")
+    assert t1 and t1["task"] == "准备英语Quiz", ts
+    t2 = find(ts, action="准备", obj="Ayse")
+    assert t2 and t2["task"] == "Ayse的pre准备" and not t2["time"], ts
+    t3 = find(ts, action="预习", time="2026-08-03")
+    assert t3 and t3["task"] == "HZM课预习", ts
+    t4 = find(ts, action="申报")
+    assert t4 and t4["task"] == "一期大创申报" and not t4["time"], ts
+    t5 = find(ts, action="发消息", time="2026-08-03")
+    assert t5 and t5["task"] == "给程彤发消息" and t5["notes"] == "要电话号码和邮箱", ts
+    t6 = find(ts, action="做实验", time="2026-08-03 17:20")
+    assert t6 and t6["task"] == "做实验" and t6["place"] == "二教楼", ts
+    t7 = find(ts, time="2026-08-05 12:00")
+    assert t7 and t7["task"] == "加分讲座", ts
+    t8 = find(ts, action="编译")
+    assert t8 and t8["task"] == "区域国别编译" and not t8["time"], ts
+    print("ok 用户真实清单 →", [t["task"] for t in ts])
+
+
 if __name__ == "__main__":
     test_example()
     test_datetime_place()
@@ -243,4 +319,11 @@ if __name__ == "__main__":
     test_time_range_colon()
     test_time_range_zhishu()
     test_header_default_time()
+    test_this_weekday_forward()
+    test_plain_weekday_forward()
+    test_timeonly_keep_sameday()
+    test_weekday_past_datetime_push()
+    test_context_inherit()
+    test_full_example_context()
+    test_user_schedule()
     print("\n全部通过")

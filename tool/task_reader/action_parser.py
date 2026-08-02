@@ -87,6 +87,30 @@ def _verb_forms(text: str):
     return found
 
 
+def _pre_object(text: str, verb_start: int, time_spans, place_spans, verb_starts=()):
+    """动词前置宾语（"一期大创申报"）：取时间/地点之后的文本作为宾语。
+
+    当前置文本里还有其它动词（如"看完网课记笔记"里"记笔记"前面是另一动作），
+    或只剩"要"等助词时，不当作宾语。
+    """
+    content_start = 0
+    for s in sorted(list(time_spans) + list(place_spans), key=lambda s: s.start):
+        if s.end <= verb_start and s.start >= content_start:
+            content_start = s.end
+            if getattr(s, "is_deadline", False):
+                for m in ("之前", "以前", "截止", "截止到", "截至", "以内", "之内"):
+                    if text[content_start:content_start + len(m)] == m:
+                        content_start += len(m)
+                        break
+    pre = text[content_start:verb_start].strip(" ，,。、")
+    if not pre:
+        return ""
+    if any(content_start <= s < verb_start for s in verb_starts):
+        return ""
+    pre = pre.strip("".join(_CRAP))
+    return pre if pre else ""
+
+
 def _extract_object(text: str, verb_end: int, time_spans, place_spans, verb="",
                     next_verb_start=None):
     """提取动词的宾语：优先识别"把/将 X + 动词"句式，否则取动词后名词短语。"""
@@ -98,24 +122,35 @@ def _extract_object(text: str, verb_end: int, time_spans, place_spans, verb="",
                 return obj.strip()
 
     start = verb_end
-    # 跳过助词/意图词
-    while start < len(text) and text[start] in _CRAP:
+    # 跳过助词/意图词（"要"除外：它是宾语与附加要求的边界，如"发消息要电话号码"）
+    while start < len(text) and text[start] in _CRAP and text[start] != "要":
         start += 1
+    if start >= len(text):
+        return ""
+
+    # 动词后的时间/地点（如"准备明天英语Quiz"里夹着的"明天"）应跳过而非截断宾语
+    spans = sorted([s for s in list(time_spans) + list(place_spans) if s.end > verb_end],
+                   key=lambda s: s.start)
+    while True:
+        moved = False
+        for s in spans:
+            if s.start == start:
+                start = s.end
+                moved = True
+        if not moved:
+            break
     if start >= len(text):
         return ""
 
     # 确定边界位置（时间/地点/标点/连接词/下一个动词）
     stops = [len(text)]
-    for s in time_spans:
-        if s.start >= verb_end:
-            stops.append(s.start)
-    for s in place_spans:
-        if s.start >= verb_end:
+    for s in spans:
+        if s.start >= start:
             stops.append(s.start)
     for m in re.finditer(r"[%s]" % re.escape(_BOUNDARY), text):
-        if m.start() >= verb_end:
+        if m.start() >= start:
             stops.append(m.start())
-    if next_verb_start is not None and next_verb_start >= verb_end:
+    if next_verb_start is not None and next_verb_start >= start:
         stops.append(next_verb_start)
     stop = min(stops)
 
@@ -153,9 +188,12 @@ class ActionParser:
         )
 
         # 1) 词典动词
+        verb_starts = {vf[1] for vf in verb_forms}
         for idx, (v, i, canon, conf) in enumerate(verb_forms):
             next_start = verb_forms[idx + 1][1] if idx + 1 < len(verb_forms) else None
             obj = _extract_object(text, i + len(v), time_spans, place_spans, v, next_start)
+            if not obj:
+                obj = _pre_object(text, i, time_spans, place_spans, verb_starts)
             conf = min(1.0, conf + (0.05 if obj else 0))
             results.append(ActionSpan(
                 text=text[i:i + len(v)], start=i, end=i + len(v),

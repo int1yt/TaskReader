@@ -106,15 +106,15 @@ _DEADLINE_MARKERS = ["之前", "以前", "截止", "截止到", "截至", "以�
 _DAYPART_ALT = "|".join(sorted(_DAYPARTS, key=len, reverse=True))
 _TIME_CN = re.compile(
     rf"(?P<dp>{_DAYPART_ALT})?(?:的)?(?P<h>{_CN_HOUR})[点时]"
-    rf"(?:(?P<half>半)|(?P<mi>\d{{1,2}})分?)?"
+    rf"(?:(?P<half>半)|(?P<quarter>一刻)|(?P<mi>{_CN_NUM})分?)?"
 )
 _TIME_COLON = re.compile(r"(?<!\d)(?P<h>\d{1,2})[:：](?P<mi>\d{2})(?!\d)")
 _TIME_DAYPART = re.compile(rf"(?P<dp>{_DAYPART_ALT})(?![点时])")
 # 时间范围：下午3点到5点 / 3点至5点半 / 2:00到4:00
 _TIME_RANGE = re.compile(
-    rf"(?P<dp>{_DAYPART_ALT})?(?P<h1>{_CN_HOUR})[点时](?:(?P<mi1>\d{{1,2}})分?)?"
+    rf"(?P<dp>{_DAYPART_ALT})?(?P<h1>{_CN_HOUR})[点时](?:(?P<half1>半)|(?P<q1>一刻)|(?P<mi1>{_CN_NUM})分?)?"
     rf"(?P<sep>到|至|~|~|—|--|->)"
-    rf"(?P<h2>{_CN_HOUR})[点时](?:(?P<half>半)|(?P<mi2>\d{{1,2}})分?)?"
+    rf"(?P<h2>{_CN_HOUR})[点时](?:(?P<half2>半)|(?P<q2>一刻)|(?P<mi2>{_CN_NUM})分?)?"
 )
 _TIME_RANGE_COLON = re.compile(
     rf"(?P<h1>\d{{1,2}})[:：](?P<mi1>\d{{2}})(?P<sep>到|至|~|~|—|--|->)(?P<h2>\d{{1,2}})[:：](?P<mi2>\d{{2}})"
@@ -126,12 +126,20 @@ _TIME_RANGE_COLON = re.compile(
 class TimeParser:
     """时间解析器。ref 为参考日期（默认今天）。"""
 
-    def __init__(self, ref=None):
+    def __init__(self, ref=None, now=None, context_date=None):
         if ref is None:
             ref = date.today()
+        if isinstance(ref, str):
+            ref = datetime.strptime(ref, "%Y-%m-%d").date()
         if isinstance(ref, datetime):
             ref = ref.date()
         self.ref = ref
+        # now 用于判断"周几+时刻"是否已过（精确到分钟），已过则推一周
+        self.now = now or datetime.combine(self.ref, time(0, 0))
+        # context_date：纯时段（"下午"）继承上一子句的日期
+        if isinstance(context_date, str):
+            context_date = datetime.strptime(context_date, "%Y-%m-%d").date()
+        self.context_date = context_date
 
     def _resolve(self, name: str, m: re.Match):
         """返回 (date, granularity, confidence) 或 None。"""
@@ -164,7 +172,7 @@ class TimeParser:
                 d = _weekday_in_week(ref, wd, week_offset=-1)
             else:
                 d = _weekday_in_week(ref, wd, week_offset=0)
-                if d < ref and not pre:
+                if d < ref and pre in ("", "这", "本"):
                     d = _weekday_in_week(ref, wd, week_offset=1)
             return d, "date", 0.92
         if name == "period_week":
@@ -256,10 +264,14 @@ class TimeParser:
                     continue
                 else:
                     hour = int(h) if h.isdigit() else cn2int(h)
-                    if m.groupdict().get("half"):
+                    g = m.groupdict()
+                    if g.get("half"):
                         minute = 30
-                    elif m.groupdict().get("mi"):
-                        minute = int(m.group("mi"))
+                    elif g.get("quarter"):
+                        minute = 15
+                    elif g.get("mi"):
+                        mi = g["mi"]
+                        minute = int(mi) if mi.isdigit() else cn2int(mi)
                     else:
                         minute = 0
                     if m.re is _TIME_COLON:
@@ -308,11 +320,23 @@ class TimeParser:
                 else:
                     h1 = int(m.group("h1")) if m.group("h1").isdigit() else cn2int(m.group("h1"))
                     h2 = int(m.group("h2")) if m.group("h2").isdigit() else cn2int(m.group("h2"))
-                    mi1 = int(m.group("mi1") or 0) if m.group("mi1") else 0
-                    if m.group("half"):
+                    g = m.groupdict()
+                    if g.get("half1"):
+                        mi1 = 30
+                    elif g.get("q1"):
+                        mi1 = 15
+                    elif g.get("mi1"):
+                        mi1 = g["mi1"]
+                        mi1 = int(mi1) if mi1.isdigit() else cn2int(mi1)
+                    else:
+                        mi1 = 0
+                    if g.get("half2"):
                         mi2 = 30
-                    elif m.group("mi2"):
-                        mi2 = int(m.group("mi2"))
+                    elif g.get("q2"):
+                        mi2 = 15
+                    elif g.get("mi2"):
+                        mi2 = g["mi2"]
+                        mi2 = int(mi2) if mi2.isdigit() else cn2int(mi2)
                     else:
                         mi2 = 0
                     if h1 > 24 or h2 > 24:
@@ -376,11 +400,18 @@ class TimeParser:
             if attached is not None and id(attached) not in used_dates:
                 used_dates.add(id(attached))
                 d = attached["date"]
+                if self.now and attached["name"] in ("weekday", "weekend"):
+                    dt0 = datetime(d.year, d.month, d.day,
+                                   rh["hour_start"], rh["minute_start"])
+                    if dt0 < self.now:
+                        d = d + timedelta(days=7)
+                span_start = attached["start"]
             else:
                 d = self.ref
+                span_start = rh["start"]
             ts = TimeSpan(
-                text=text[rh["start"]:rh["end"]],
-                start=rh["start"], end=rh["end"],
+                text=text[span_start:rh["end"]],
+                start=span_start, end=rh["end"],
                 confidence=rh["confidence"],
                 date=f"{d:%Y-%m-%d}",
                 time=f"{rh['hour_start']:02d}:{rh['minute_start']:02d}",
@@ -402,6 +433,11 @@ class TimeParser:
             if attached is not None and id(attached) not in used_dates:
                 used_dates.add(id(attached))
                 d = attached["date"]
+                # 周几+时刻整体已过（如周日晚上写"周日早上"）→ 推到下周同日
+                if self.now and attached["name"] in ("weekday", "weekend"):
+                    dt0 = datetime(d.year, d.month, d.day, th["hour"], th["minute"])
+                    if dt0 < self.now:
+                        d = d + timedelta(days=7)
                 conf = attached["confidence"] * 0.6 + th["confidence"] * 0.4
                 ts = TimeSpan(
                     text=text[attached["start"]:th["end"]],
@@ -415,7 +451,8 @@ class TimeParser:
                 )
                 spans.append(ts)
             else:
-                d = self.ref
+                # 纯时段（无日期）：优先继承上一子句的日期，否则取今天
+                d = self.context_date or self.ref
                 ts = TimeSpan(
                     text=text[th["start"]:th["end"]],
                     start=th["start"], end=th["end"],
