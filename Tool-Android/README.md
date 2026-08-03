@@ -1,10 +1,60 @@
 # Tool-Android — TaskReader 手机版
 
-在 Android 手机上本地提取中文任务（动作、对象、时间、地点），输出结构化 JSON。
+在 Android 手机上本地提取中文任务（动作、对象、时间、地点）。
 基于 **Termux + Ollama + qwen3 小模型**，数据不出手机，断网可离线运行。
 
+**最终形态是微信机器人**：给微信好友发一句话，机器人回复提取出的任务。
+当前微信接入模块为**预留接口**（`wechat/`），先用**网页测试端**在手机上验证
+核心流程。
+
+架构：`bot/`（消息处理核心，与传输无关）← `wechat/`（微信接入，待实现）＋
+`webui.py`（网页测试端，模拟微信聊天）。
+
 > **零基础用户**：按照下文「零基础三步走」操作即可，全程无需任何电脑知识，
-> 安装脚本会自动检测环境并引导你。
+> 安装脚本会自动检测环境并引导你。装完后用「网页测试端」最省事。
+
+---
+
+## 网页测试端（模拟微信聊天）
+
+安装完成后，在 Termux 里输入一行：
+
+```bash
+bash serve.sh
+```
+
+然后按提示打开手机浏览器访问 `http://127.0.0.1:8000`，即可看到**仿微信聊天界面**：
+
+- 给机器人发一句中文，它像微信一样回复（绿色气泡是你的消息，白色气泡是机器人回复）
+- 回复里展示每个任务的时间、地点、备注、置信度，并附带结构化卡片
+- 界面有示例句子，点一下即可试玩
+- 顶栏显示「AI 在线 / 纯规则模式」，代表本地小模型是否可用
+
+> 💡 小技巧：在浏览器菜单里选「**添加到主屏幕**」，之后就能像普通 App 一样
+> 点图标打开，无需再进 Termux。
+
+---
+
+## 微信接入（预留接口，待实现）
+
+当前 `wechat/` 目录已定义好接入骨架，尚未实现真实登录/收发：
+
+```
+wechat/
+  models.py    # WeChatMessage / WeChatContext 消息模型
+  adapter.py   # WeChatAdapter：登录、收发、消息回调（TODO 待实现）
+```
+
+接入真实微信时只需三步：
+1. 选定微信 SDK（如 itchat / wechaty / wxauto / 企业微信回调）
+2. 在 `WeChatAdapter.login()` 实现登录
+3. 把收到的消息转成 `WeChatMessage` → `self.core.handle_text(...)` → `send()` 发回
+
+**全部业务逻辑在 `bot/core.py`，微信端不碰解析细节。** 命令行可先无微信验证流程：
+
+```bash
+python -m wechat.adapter --dry-run "我下周三要交论文"
+```
 
 ---
 
@@ -37,19 +87,24 @@ bash install.sh
 安装脚本会自动完成一切：更新软件源 → 装 Python → 装 Ollama →
 拉取小模型 qwen3:0.6b → 写入配置文件。**全程只需联网一次**，之后全离线。
 
-装好后，**以后每次使用**只需打开 Termux 输入两行：
+装好后，**以后每次使用**打开 Termux 输入两行即可启动图形界面：
 
 ```bash
 cd /storage/emulated/0/Download/Tool-Android
-bash run.sh 我下周三要交论文
+bash serve.sh
 ```
+
+然后手机浏览器打开 `http://127.0.0.1:8000` 即可点按使用（也可「添加到主屏幕」变成 App）。
 
 ---
 
 ## 常用用法
 
 ```bash
-# 提取任务（自动启动本地 LLM）
+# 图形界面（推荐，不用敲命令）
+bash serve.sh
+
+# 命令行提取任务（自动启动本地 LLM）
 bash run.sh 我下周三要交论文
 bash run.sh 明天任务：1.看夏商周网课 2.刷真题
 
@@ -95,9 +150,19 @@ bash install.sh qwen3:4b      # 约 2.5GB，仅建议旗舰机
 ```
 Tool-Android/
   install.sh               # 一键安装脚本（含 Termux 环境检测与安装指引）
-  run.sh                   # 快捷运行入口（自动拉起 Ollama）
+  serve.sh                 # 网页测试端启动（模拟微信聊天，推荐先测这个）
+  run.sh                   # 命令行快捷运行（自动拉起 Ollama）
+  webui.py                 # 测试客户端 Web 服务（纯标准库，零额外依赖）
+  webui/
+    index.html             # 仿微信聊天界面（浏览器打开）
+  bot/                     # 机器人核心（与传输无关，微信/网页共用）
+    core.py                # BotCore：处理文本消息 → 返回回复（文本+结构化任务）
+    reply.py               # Reply：机器人输出统一格式
+  wechat/                  # 微信接入模块（预留接口，待实现）
+    adapter.py             # WeChatAdapter：登录/收发/回调（TODO）
+    models.py              # WeChatMessage / WeChatContext 消息模型
   requirements.txt         # 依赖（jieba）
-  task_reader/             # 核心包（自包含，可独立拷贝）
+  task_reader/             # 解析核心（自包含，可独立拷贝）
     config.json            # 安装脚本自动生成（host + model）
     cli.py engine.py ...   # 解析器实现
     dicts/                 # 外置词典

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#ededed">
+<title>任务提取助手 · 微信测试版</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #ededed; color: #191919; display: flex; flex-direction: column;
+  }
+  /* 顶栏，仿微信 */
+  header {
+    background: #ededed; padding: 12px 16px; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid #d9d9d9; position: sticky; top: 0; z-index: 10;
+  }
+  .avatar {
+    width: 34px; height: 34px; border-radius: 6px; background: #07c160; color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px;
+  }
+  header .title { font-size: 16px; font-weight: 600; }
+  header .sub { font-size: 11px; color: #888; margin-top: 1px; }
+  header .llm { margin-left: auto; font-size: 11px; color: #888; }
+  header .llm.on { color: #07c160; }
+  header .llm.off { color: #f5a623; }
+
+  /* 聊天区 */
+  #chat {
+    flex: 1; overflow-y: auto; padding: 16px 14px; display: flex; flex-direction: column;
+    gap: 14px;
+  }
+  .msg { display: flex; gap: 8px; max-width: 100%; }
+  .msg .av { width: 34px; height: 34px; border-radius: 5px; flex-shrink: 0; display: flex;
+            align-items: center; justify-content: center; color: #fff; font-size: 14px; }
+  .msg.me { flex-direction: row-reverse; }
+  .msg.me .av { background: #10aeff; }
+  .msg.bot .av { background: #07c160; }
+  .bubble {
+    max-width: 76%; background: #fff; border-radius: 8px; padding: 10px 12px;
+    font-size: 15px; line-height: 1.6; word-break: break-word; white-space: pre-wrap;
+    box-shadow: 0 1px 1px rgba(0,0,0,.05);
+  }
+  .msg.me .bubble { background: #95ec69; }
+  .bubble .taskcard {
+    background: #f7f7f7; border-radius: 6px; padding: 8px 10px; margin-top: 8px; border-left: 3px solid #07c160;
+  }
+  .bubble .taskcard .n { font-weight: 600; font-size: 15px; }
+  .bubble .taskcard .d { font-size: 13px; color: #555; margin-top: 3px; }
+  .bubble .tag { display: inline-block; font-size: 10px; background: #e8f5ee; color: #07c160;
+                 border-radius: 4px; padding: 1px 6px; margin-right: 6px; vertical-align: 1px; }
+
+  /* 快捷示例 */
+  .chips { display: flex; gap: 8px; padding: 10px 14px 4px; background: #ededed; overflow-x: auto; }
+  .chip { background: #fff; border: 1px solid #d0d0d0; color: #444; border-radius: 14px;
+          padding: 5px 12px; font-size: 13px; white-space: nowrap; cursor: pointer; flex-shrink: 0; }
+
+  /* 输入区 */
+  .inputbar {
+    display: flex; gap: 8px; align-items: center; padding: 10px 12px;
+    background: #f7f7f7; border-top: 1px solid #d9d9d9; position: sticky; bottom: 0;
+  }
+  #input {
+    flex: 1; border: 1px solid #d9d9d9; border-radius: 6px; padding: 9px 12px; font-size: 15px;
+    background: #fff; outline: none; font-family: inherit;
+  }
+  #input:focus { border-color: #07c160; }
+  #send {
+    background: #07c160; color: #fff; border: none; border-radius: 6px; padding: 9px 18px;
+    font-size: 15px; font-weight: 600; cursor: pointer; flex-shrink: 0;
+  }
+  #send:active { opacity: .85; }
+  #send:disabled { opacity: .5; }
+
+  .typing { color: #888; font-size: 13px; padding: 4px 0; }
+  .err { color: #e64340; font-size: 13px; padding: 4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="avatar">任</div>
+  <div>
+    <div class="title">任务提取助手</div>
+    <div class="sub">微信机器人 · 内测</div>
+  </div>
+  <span class="llm" id="llmState">检测中…</span>
+</header>
+
+<div class="chips" id="chips">
+  <span class="chip" data-demo="我下周三要交论文">交论文</span>
+  <span class="chip" data-demo="周五晚上八点在图书馆开组会，然后去食堂吃饭">开组会</span>
+  <span class="chip" data-demo="明天任务：1.看夏商周网课，记笔记 2.刷小程序真题">列表任务</span>
+  <span class="chip" data-demo="两周后交作业">交作业</span>
+</div>
+
+<div id="chat"></div>
+
+<div class="inputbar">
+  <input id="input" placeholder="给机器人发一句话…" autocomplete="off">
+  <button id="send">发送</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let msgCount = 0;
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function addMsg(who, text, tasks) {
+  msgCount++;
+  const el = document.createElement('div');
+  el.className = 'msg ' + who;
+  const av = who === 'me' ? '我' : '任';
+  let bubble = '<div class="av">' + av + '</div><div class="bubble">' + esc(text);
+  if (tasks && tasks.length) {
+    bubble += tasks.map(t => {
+      const n = esc(t.task || t.raw || '任务');
+      const tag = t.source ? '<span class="tag">' + esc(t.source) + '</span>' : '';
+      let d = '';
+      if (t.time) d += '⏰ ' + esc(t.time);
+      if (t.time_text) d += (d ? ' · ' : '') + esc(t.time_text);
+      if (t.place) d += (d ? ' · ' : '') + '📍 ' + esc(t.place);
+      if (t.notes) d += (d ? ' · ' : '') + '📝 ' + esc(t.notes);
+      return '<div class="taskcard">' + tag + '<div class="n">' + n + '</div>'
+           + (d ? '<div class="d">' + d + '</div>' : '') + '</div>';
+    }).join('');
+  }
+  bubble += '</div>';
+  el.innerHTML = bubble;
+  $('chat').appendChild(el);
+  $('chat').scrollTop = $('chat').scrollHeight;
+}
+
+function addStatus(cls, text) {
+  const el = document.createElement('div');
+  el.className = cls;
+  el.textContent = text;
+  $('chat').appendChild(el);
+  $('chat').scrollTop = $('chat').scrollHeight;
+}
+
+function setLLM(state) {
+  const el = $('llmState');
+  if (state === 'ready') { el.textContent = 'AI 在线'; el.className = 'llm on'; }
+  else if (state === 'no') { el.textContent = '纯规则模式'; el.className = 'llm off'; }
+  else { el.textContent = 'AI 离线'; el.className = 'llm off'; }
+}
+
+async function ping() {
+  try {
+    const r = await fetch('/api/ping');
+    const d = await r.json();
+    setLLM(d.llm_ready ? 'ready' : 'no');
+  } catch (e) { setLLM('off'); }
+}
+
+async function send() {
+  const text = $('input').value.trim();
+  if (!text) return;
+  $('input').value = '';
+  addMsg('me', text);
+  addStatus('typing', '对方正在输入…');
+  $('send').disabled = true;
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, use_llm: true })
+    });
+    const d = await resp.json();
+    document.querySelector('.typing')?.remove();
+    if (!d.ok) { addStatus('err', d.error || '处理失败'); return; }
+    addMsg('bot', d.text, d.tasks);
+    setLLM(d.llm_ready ? 'ready' : 'no');
+  } catch (e) {
+    document.querySelector('.typing')?.remove();
+    addStatus('err', '无法连接本地服务，请确认已运行 bash serve.sh');
+  } finally {
+    $('send').disabled = false;
+  }
+}
+
+$('send').addEventListener('click', send);
+$('input').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+document.querySelectorAll('.chip').forEach(ch => {
+  ch.addEventListener('click', () => { $('input').value = ch.dataset.demo; send(); });
+});
+
+// 欢迎语
+addMsg('bot', '你好！我是任务提取助手。\n给我发一句包含任务的话，我帮你提取成结构化任务。\n例如：明天下午三点去图书馆还书。');
+ping();
+</script>
+</body>
+</html>
