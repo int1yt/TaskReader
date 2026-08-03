@@ -5,11 +5,30 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import date
+from pathlib import Path
 
 _DEFAULT_HOST = "http://127.0.0.1:11434"
 _DEFAULT_MODEL = "qwen3:8b"
+
+_CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+
+
+def _load_config() -> dict:
+    """读取包同级 config.json（由安装脚本生成）。不存在或损坏时返回空 dict。"""
+    try:
+        if _CONFIG_PATH.exists():
+            data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+_CONFIG = _load_config()
 
 _SYSTEM = (
     "你是任务提取助手。请从用户输入的中文句子中提取所有任务/计划，"
@@ -52,8 +71,14 @@ def _pick(item: dict, key: str):
 class OllamaClient:
     def __init__(self, host: str = None, model: str = None, timeout: float = 300.0):
         import os
-        self.host = host or os.environ.get("OLLAMA_HOST", _DEFAULT_HOST)
-        self.model = model or os.environ.get("TASK_READER_MODEL", _DEFAULT_MODEL)
+        self.host = (host
+                     or os.environ.get("OLLAMA_HOST")
+                     or _CONFIG.get("host")
+                     or _DEFAULT_HOST)
+        self.model = (model
+                      or os.environ.get("TASK_READER_MODEL")
+                      or _CONFIG.get("model")
+                      or _DEFAULT_MODEL)
         self.timeout = timeout
         self._available = None
 
