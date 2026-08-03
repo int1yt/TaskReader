@@ -1,0 +1,56 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'com.taskreader.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.taskreader.app"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        // litertlm-android 0.15.0 以 Java 21 (class v65) 发布，须用 JDK21 编译
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version "3.14"
+        pyc {
+            src false
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.webkit:webkit:1.11.0'
+    // LiteRT-LM 本地 LLM 引擎（真机验证 spike；0.15.0 引入 kotlin-reflect 2.2.21 / coroutines 1.9.0）
+    implementation 'com.google.ai.edge.litertlm:litertlm-android:0.15.0'
+}
+
+configurations.all {
+    resolutionStrategy {
+        // litertlm-android 的 kotlin-reflect 2.2.21 需要匹配的 stdlib
+        force 'org.jetbrains.kotlin:kotlin-stdlib:2.2.21'
+    }
+}

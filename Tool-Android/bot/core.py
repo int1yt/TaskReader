@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -89,3 +90,10 @@ class BotCore:
         if not sentence or not sentence.strip():
             return []
         return self.reader.parse_json(sentence, use_llm=use_llm)
+
+    def handle_text_json(self, sentence: str, use_llm: bool = True) -> str:
+        """返回 Reply 的 JSON 字符串，供 Android WebView 桥接调用。"""
+        reply = self.handle_text(sentence, use_llm=use_llm)
+        data = reply.to_dict()
+        data["ok"] = True
+        return json.dumps(data, ensure_ascii=False)

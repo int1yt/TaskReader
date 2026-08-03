@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.TaskReader" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">#ededed</item>
+        <item name="android:statusBarColor">#ededed</item>
+        <item name="android:navigationBarColor">#f7f7f7</item>
+    </style>
+</resources>
