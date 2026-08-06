@@ -44,8 +44,10 @@ chaquopy {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.webkit:webkit:1.11.0'
-    // LiteRT-LM 本地 LLM 引擎（真机验证 spike；0.15.0 引入 kotlin-reflect 2.2.21 / coroutines 1.9.0）
+    // LiteRT-LM 本地 LLM 引擎
     implementation 'com.google.ai.edge.litertlm:litertlm-android:0.15.0'
+    // Xposed API（仅编译时，不打包进 APK；LSPosed 框架运行时提供）
+    compileOnly 'de.robv.android.xposed:api:82'
 }
 
 configurations.all {

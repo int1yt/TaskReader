@@ -147,6 +147,18 @@ if (-not (Test-Path (Join-Path $gradleDir "bin\gradle.bat"))) {
     Write-Host "Gradle 已安装"
 }
 
+# ---------- 4.5 下载 AI 模型（打包进 APK） ----------
+Step "4.5 下载 AI 模型到 assets"
+$modelDir = Join-Path $root "app\src\main\assets\models"
+$modelFile = Join-Path $modelDir "qwen3_0_6b_mixed_int4.litertlm"
+if (-not (Test-Path $modelFile) -or (Get-Item $modelFile).Length -lt 100MB) {
+    Write-Host "下载 Qwen3-0.6B 模型 (~474MB) ..."
+    Download "https://hf-mirror.com/litert-community/Qwen3-0.6B/resolve/main/qwen3_0_6b_mixed_int4.litertlm" $modelFile
+    Write-Host "模型已下载: $((Get-Item $modelFile).Length / 1MB) MB"
+} else {
+    Write-Host "模型已存在，跳过下载: $((Get-Item $modelFile).Length / 1MB) MB"
+}
+
 # ---------- 5. 构建 APK ----------
 Step "5/5 编译 APK（首次较慢，请耐心等待）"
 $env:GRADLE_USER_HOME = Join-Path $tools "gradle-home"

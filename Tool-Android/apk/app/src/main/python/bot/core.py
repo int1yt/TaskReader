@@ -41,20 +41,57 @@ def _fmt_note(t: dict) -> str:
 
 
 def _build_text(sentence: str, tasks: list) -> str:
-    """把任务列表渲染成发给用户的纯文本。"""
+    """把任务列表渲染成发给用户的纯文本（根据 bot_config 个性 + 语言 + 模板）。"""
+    try:
+        from bot_config import load as _load_cfg, get_personality_templates
+        cfg = _load_cfg()
+    except Exception:
+        cfg = {}
+
+    profile = cfg.get("bot_profile", {})
+    system = cfg.get("system", {})
+    personality = profile.get("personality", "friendly")
+    language = system.get("language", "zh")
+
+    # 优先使用个性模板，其次用用户自定义的 reply_style，最后用默认值
+    try:
+        tpls = get_personality_templates(personality, language)
+    except Exception:
+        tpls = {}
+
+    custom_style = cfg.get("reply_style", {})
+
+    header_tpl = custom_style.get("header") or tpls.get("header", "收到！整理了 {count} 个任务：")
+    item_tpl = custom_style.get("item") or tpls.get("item", "{index}. {name}\n   ⏰ {time}\n   📍 {note}")
+    footer_tpl = custom_style.get("footer") or tpls.get("footer", "")
+    no_task_tpl = custom_style.get("no_task") or tpls.get("no_task", "未识别到任务。")
+    use_emoji = custom_style.get("use_emoji", True)
+
     if not tasks:
-        return "没有识别到任务，换个说法试试？\n（可勾选「使用 AI」增强识别）"
-    lines = [f"好的，为你找到 {len(tasks)} 个任务："]
+        return no_task_tpl
+
+    header = header_tpl.format(count=len(tasks))
+    lines = [header]
     for i, t in enumerate(tasks, 1):
-        name = t.get("task") or t.get("raw") or "任务"
-        lines.append(f"{i}. {name}")
-        if _fmt_time(t):
-            lines.append(f"   时间：{_fmt_time(t)}")
-        if _fmt_note(t):
-            lines.append(f"   备注：{_fmt_note(t)}")
-        conf = t.get("confidence")
-        if conf:
-            lines.append(f"   置信度：{conf:.0%}")
+        name = t.get("task") or t.get("raw") or ("Task" if language == "en" else "任务")
+        time_label = "Time" if language == "en" else "时间"
+        note_label = "Note" if language == "en" else "备注"
+        item = item_tpl.format(
+            index=str(i),
+            name=name,
+            time=_fmt_time(t) or (f"{time_label}未指定" if language == "zh" else f"{time_label} N/A"),
+            note=_fmt_note(t) or ("无" if language == "zh" else "None"),
+        )
+        lines.append(item)
+
+    if footer_tpl:
+        lines.append(footer_tpl)
+
+    if profile.get("signature", True):
+        name = profile.get("name", "小读")
+        sep = "\n—— " if language == "zh" else "\n-- "
+        lines.append(f"{sep}{name}")
+
     return "\n".join(lines)
 
 

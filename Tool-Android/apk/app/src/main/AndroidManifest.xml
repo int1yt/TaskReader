@@ -2,19 +2,35 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application
         android:name="com.chaquo.python.android.PyApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="任务提取助手"
+        android:label="@string/app_name"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.TaskReader">
 
+        <!-- LSPosed 模块元数据 -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="TaskReader：微信任务分解机器人。在微信中注入虚拟联系人，发送消息自动分解为结构化任务。" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="82" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposed_scope" />
+
         <activity
-            android:name=".SpikeActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -22,9 +38,38 @@
         </activity>
 
         <activity
-            android:name=".MainActivity"
+            android:name=".SpikeActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden">
         </activity>
+
+        <!-- 任务解析前台服务（供 Xposed hook 通过广播调用） -->
+        <service
+            android:name=".TaskReaderService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- 无障碍服务（无 root 备用方案） -->
+        <service
+            android:name=".WeChatBotService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- 通知监听（无 root 备用方案） -->
+        <service
+            android:name=".WxNotificationListener"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

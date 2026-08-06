@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TaskReader</string>
+    <string name="accessibility_desc">TaskReader 需要无障碍权限以便在微信「自己」聊天窗口中自动输入并发送任务分解结果。不会读取或上传任何隐私数据，所有处理均在本地完成。</string>
+</resources>

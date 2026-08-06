@@ -1,6 +1,11 @@
 package com.taskreader.app;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,7 +17,6 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -20,235 +24,276 @@ import android.widget.TextView;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
 
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * 任务提取助手 · 主界面
- *
- * 启动流程：先显示加载屏，在后台线程完成
- *   Python 启动 → jieba 分词预热 → LLM 模型实际加载进内存，
- * 全部就绪后才进入聊天界面。LLM 不可用时显示安装指引（不降级为纯规则）。
- */
 public class MainActivity extends AppCompatActivity {
 
+    private static final String MODEL_NAME = "qwen3_0_6b_mixed_int4.litertlm";
+
     private final Handler main = new Handler(Looper.getMainLooper());
-
     private LinearLayout loadingView;
-    private TextView statusText;
+    private TextView statusText, subText;
     private ProgressBar progressBar;
-    private Button retryButton;
-    private LinearLayout failView;
-    private TextView failText;
-
     private WebView webView;
-    private volatile boolean pythonReady = false;
+    private volatile boolean ready = false;
     private volatile boolean llmReady = false;
+    private String llmStatus = "";
     private final AtomicBoolean loading = new AtomicBoolean(false);
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        buildLoadingView();
-        setContentView(loadingView);
-        startLoading();
-    }
-
-    // ---------- 加载屏 UI ----------
-    private void buildLoadingView() {
         loadingView = new LinearLayout(this);
         loadingView.setOrientation(LinearLayout.VERTICAL);
         loadingView.setGravity(Gravity.CENTER);
         loadingView.setPadding(dp(48), dp(48), dp(48), dp(48));
-
         progressBar = new ProgressBar(this);
-        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(dp(56), dp(56));
-        pp.gravity = Gravity.CENTER_HORIZONTAL;
-        loadingView.addView(progressBar, pp);
-
+        progressBar.setIndeterminate(true);
+        loadingView.addView(progressBar, new LinearLayout.LayoutParams(dp(200), dp(6)));
         statusText = new TextView(this);
-        statusText.setText("正在加载，请稍候…");
-        statusText.setTextSize(15);
+        statusText.setText("正在启动…");
+        statusText.setTextSize(16);
         statusText.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        tp.topMargin = dp(20);
-        loadingView.addView(statusText, tp);
-
-        failView = new LinearLayout(this);
-        failView.setOrientation(LinearLayout.VERTICAL);
-        failView.setGravity(Gravity.CENTER);
-        failView.setVisibility(View.GONE);
-        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        fp.topMargin = dp(24);
-        failView.setLayoutParams(fp);
-
-        failText = new TextView(this);
-        failText.setTextSize(13);
-        failText.setGravity(Gravity.LEFT);
-        failText.setLineSpacing(dp(4), 1f);
-        failView.addView(failText, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        retryButton = new Button(this);
-        retryButton.setText("重新加载");
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        bp.topMargin = dp(20);
-        bp.gravity = Gravity.CENTER_HORIZONTAL;
-        retryButton.setLayoutParams(bp);
-        retryButton.setOnClickListener(v -> startLoading());
-        failView.addView(retryButton);
-
-        loadingView.addView(failView);
+        statusText.setPadding(0, dp(20), 0, 0);
+        loadingView.addView(statusText);
+        subText = new TextView(this);
+        subText.setText("");
+        subText.setTextSize(12);
+        subText.setGravity(Gravity.CENTER);
+        subText.setTextColor(0xFF999999);
+        subText.setPadding(0, dp(8), 0, 0);
+        loadingView.addView(subText);
+        setContentView(loadingView);
+        startInit();
     }
 
-    private int dp(int v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
-    }
+    private int dp(int v) { return (int)(v * getResources().getDisplayMetrics().density + 0.5f); }
 
-    private void setStatus(String text) {
-        main.post(() -> statusText.setText(text));
-    }
-
-    private void showFail(String text) {
-        main.post(() -> {
-            progressBar.setVisibility(View.GONE);
-            failView.setVisibility(View.VISIBLE);
-            failText.setText(text);
-            statusText.setText("初始化未完成");
-        });
-    }
-
-    // ---------- 后台加载 ----------
-    private void startLoading() {
+    private void startInit() {
         if (loading.get()) return;
         loading.set(true);
-        pythonReady = false;
-        llmReady = false;
-        main.post(() -> {
-            progressBar.setVisibility(View.VISIBLE);
-            failView.setVisibility(View.GONE);
-        });
-
         new Thread(() -> {
             try {
-                // 1. Python 引擎（PyApplication 已启动解释器）
-                setStatus("正在启动 Python 引擎…");
+                setStatus("正在初始化引擎…", "");
                 Python py = Python.getInstance();
-
-                // 2. 加载核心 + 预热 jieba 分词（首次构建词典较慢）
-                setStatus("正在加载分词与解析引擎…");
-                py.getModule("bot.core").callAttr("BotCore");
                 py.getModule("jieba").callAttr("initialize");
 
-                // 3. 连接本地 Ollama 并检查模型
-                setStatus("正在连接本地 AI 模型…");
-                PyObject client = py.getModule("task_reader.llm").callAttr("OllamaClient");
-                boolean ok = client.callAttr("_check").toBoolean();
-                if (!ok) {
-                    pythonReady = true;
-                    llmReady = false;
-                    main.post(() -> {
-                        loading.set(false);
-                        showFail("未检测到本地 AI 模型。\n\n" + llmHelp());
-                    });
-                    return;
+                setStatus("正在加载 AI 模型…", "");
+                File dir = new File(getFilesDir(), "models");
+                dir.mkdirs();
+                File model = new File(dir, MODEL_NAME);
+
+                if (!model.exists() || model.length() < 1024 * 1024) {
+                    setStatus("首次使用：解压 AI 模型", "约 474MB，仅此一次");
+                    try {
+                        InputStream in = getAssets().open("models/" + MODEL_NAME);
+                        FileOutputStream out = new FileOutputStream(model);
+                        byte[] buf = new byte[65536];
+                        long done = 0, total = in.available();
+                        int n;
+                        while ((n = in.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                            done += n;
+                            final long d = done, t = total;
+                            main.post(() -> setStatus("解压模型中… " + (t > 0 ? (int)(d * 100 / t) + "%" : ""),
+                                    String.format(Locale.US, "%.0f / %.0f MB", d / 1048576.0, t / 1048576.0)));
+                        }
+                        out.close(); in.close();
+                    } catch (Exception e) {
+                        android.util.Log.w("TaskReader", "Model copy failed", e);
+                    }
                 }
 
-                // 4. 真正把模型加载进内存（首次需下载到内存，可能较久）
-                setStatus("正在加载 AI 模型到内存（首次较慢）…");
-                boolean warmed = client.callAttr("warmup").toBoolean();
-                if (!warmed) {
-                    pythonReady = true;
-                    llmReady = false;
-                    main.post(() -> {
-                        loading.set(false);
-                        showFail("AI 模型加载失败。\n\n" + llmHelp());
-                    });
-                    return;
+                if (model.exists() && model.length() > 1024 * 1024 && !LlmEngine.isInitialized()) {
+                    setStatus("加载 AI 模型到内存…", String.format(Locale.US, "%.0fMB", model.length() / 1048576.0));
+                    LlmEngine.initialize(model.getAbsolutePath(), getCacheDir().getAbsolutePath());
                 }
+                llmReady = LlmEngine.isInitialized();
+                llmStatus = llmReady ? "本地AI已就绪" : (model.exists() ? "加载失败，使用规则模式" : "模型未打包，使用规则模式");
 
-                pythonReady = true;
-                llmReady = true;
+                py.getModule("bot.core").callAttr("BotCore");
+                ready = true;
+
+                // 启动任务解析前台服务（供 Xposed hook 调用）
                 main.post(() -> {
-                    loading.set(false);
-                    enterChat();
+                    Intent svc = new Intent(MainActivity.this, TaskReaderService.class);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(svc);
+                    } else {
+                        startService(svc);
+                    }
+                });
+
+                main.post(() -> {
+                    progressBar.setVisibility(View.GONE);
+                    setStatus(llmReady ? "全部就绪" : "已就绪（规则模式）", llmStatus);
+                    main.postDelayed(this::enterUi, 400);
                 });
             } catch (Exception e) {
                 android.util.Log.e("TaskReader", "init failed", e);
-                main.post(() -> {
-                    loading.set(false);
-                    showFail("初始化失败：" + e + "\n\n请重启应用或检查设置。");
-                });
-            }
+                ready = true;
+                main.post(() -> { progressBar.setVisibility(View.GONE); setStatus("初始化失败", e.getMessage()); main.postDelayed(this::enterUi, 1500); });
+            } finally { loading.set(false); }
         }).start();
     }
 
-    private String llmHelp() {
-        return "请先在手机上安装 Ollama（Play 商店 / F-Droid），\n" +
-               "拉取模型后重新加载：\n" +
-               "  ollama pull qwen3:0.6b\n\n" +
-               "模型就绪后点下方「重新加载」即可进入聊天。";
-    }
+    private void setStatus(String s, String sub) { main.post(() -> { statusText.setText(s); subText.setText(sub); }); }
 
-    // ---------- 聊天界面 ----------
     @SuppressLint("SetJavaScriptEnabled")
-    private void enterChat() {
+    private void enterUi() {
         webView = new WebView(this);
         WebSettings s = webView.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setAllowFileAccess(true);
-        s.setDomStorageEnabled(true);
+        s.setJavaScriptEnabled(true); s.setAllowFileAccess(true); s.setDomStorageEnabled(true);
         webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return false;
-            }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { return false; }
         });
-        webView.addJavascriptInterface(new Bridge(), "TaskReaderBridge");
+        webView.addJavascriptInterface(new Bridge(), "Bridge");
         setContentView(webView);
         webView.loadUrl("file:///android_asset/index.html");
     }
 
-    /** JS 桥：供 index.html 调用 */
-    private class Bridge {
-
-        @JavascriptInterface
-        public String parse(String sentence, boolean useLlm) {
-            if (!pythonReady) {
-                return "{\"ok\":false,\"error\":\"引擎尚未就绪，请稍后重试\"}";
-            }
-            if (!llmReady) {
-                return "{\"ok\":false,\"error\":\"AI 模型不可用，请重新加载\"}";
-            }
-            try {
-                PyObject bot = Python.getInstance().getModule("bot.core").callAttr("BotCore");
-                String json = bot.callAttr("handle_text_json", sentence, true).toString();
-                return json;
-            } catch (Exception e) {
-                android.util.Log.e("TaskReader", "parse failed", e);
-                return "{\"ok\":false,\"error\":\"解析失败：" + e.getMessage() + "\"}";
-            }
-        }
-
-        @JavascriptInterface
-        public boolean isLlmReady() {
-            return llmReady;
-        }
-    }
+    private static final int REQ_PICK_AVATAR = 1001;
+    private String pendingAvatarPath = null;
 
     @Override
-    public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_PICK_AVATAR && resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+            Uri uri = data.getData();
+            try {
+                File dir = new File(getFilesDir(), "avatars");
+                dir.mkdirs();
+                File dest = new File(dir, "avatar_" + System.currentTimeMillis() + ".png");
+                InputStream in = getContentResolver().openInputStream(uri);
+                FileOutputStream out = new FileOutputStream(dest);
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                in.close(); out.close();
+                pendingAvatarPath = dest.getAbsolutePath();
+                // 写入 Python config
+                try {
+                    String cfg = Python.getInstance().getModule("bot_config").callAttr("load_json").toString();
+                    JSONObject o = new JSONObject(cfg);
+                    o.getJSONObject("bot_profile").put("avatar_path", pendingAvatarPath);
+                    Python.getInstance().getModule("bot_config").callAttr("save_json", o.toString());
+                } catch (Exception ignore) {}
+            } catch (Exception e) {
+                android.util.Log.e("TaskReader", "avatar save failed", e);
+            }
         }
     }
+
+    private class Bridge {
+        @JavascriptInterface public String parse(String sentence, boolean useLlm) {
+            if (!ready) return "{\"ok\":false,\"error\":\"引擎未就绪\"}";
+            try { return Python.getInstance().getModule("bot.core").callAttr("BotCore").callAttr("handle_text_json", sentence, useLlm && llmReady).toString(); }
+            catch (Exception e) { return "{\"ok\":false,\"error\":\"" + e.getMessage() + "\"}"; }
+        }
+        @JavascriptInterface public boolean isLlmReady() { return llmReady; }
+        @JavascriptInterface public String getLlmStatus() { return llmStatus; }
+        @JavascriptInterface public String getConfig() {
+            try { return Python.getInstance().getModule("bot_config").callAttr("load_json").toString(); } catch (Exception e) { return "{}"; }
+        }
+        @JavascriptInterface public boolean saveConfig(String json) {
+            try {
+                boolean ok = Python.getInstance().getModule("bot_config").callAttr("save_json", json).toBoolean();
+                if (ok) {
+                    // 同步 self_name / trigger_keyword 到 SharedPreferences
+                    JSONObject o = new JSONObject(json);
+                    JSONObject sys = o.optJSONObject("system");
+                    if (sys != null) {
+                        SharedPreferences.Editor e = getSharedPreferences(WeChatBotService.PREF, MODE_PRIVATE).edit();
+                        String sn = sys.optString("wechat_self_name", "");
+                        String tk = sys.optString("trigger_keyword", "/task");
+                        if (!sn.isEmpty()) e.putString("self_name", sn);
+                        if (!tk.isEmpty()) e.putString("trigger_keyword", tk);
+                        e.apply();
+                    }
+                }
+                return ok;
+            } catch (Exception e) { return false; }
+        }
+        @JavascriptInterface public String getAvatarPath() {
+            try {
+                String cfg = Python.getInstance().getModule("bot_config").callAttr("load_json").toString();
+                JSONObject o = new JSONObject(cfg);
+                return o.getJSONObject("bot_profile").optString("avatar_path", "");
+            } catch (Exception e) { return ""; }
+        }
+        @JavascriptInterface public void pickAvatar() {
+            main.post(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("image/*");
+                startActivityForResult(i, REQ_PICK_AVATAR);
+            });
+        }
+        @JavascriptInterface public String getAvatarPathNow() {
+            return pendingAvatarPath != null ? pendingAvatarPath : "";
+        }
+        @JavascriptInterface public String serverStart() {
+            try { return Python.getInstance().getModule("wechat_server").callAttr("start_server", "0.0.0.0", 8080, "taskreader").toString(); }
+            catch (Exception e) { return "{\"ok\":false,\"msg\":\"" + e.getMessage() + "\"}"; }
+        }
+        @JavascriptInterface public String serverStop() {
+            try { return Python.getInstance().getModule("wechat_server").callAttr("stop_server").toString(); }
+            catch (Exception e) { return "{\"ok\":false}"; }
+        }
+        @JavascriptInterface public String serverStatus() {
+            try { return Python.getInstance().getModule("wechat_server").callAttr("server_status").toString(); }
+            catch (Exception e) { return "{\"ok\":false,\"running\":false}"; }
+        }
+        @JavascriptInterface public boolean isAccessibilityOn() {
+            String srv = getPackageName() + "/" + WeChatBotService.class.getName();
+            String val = android.provider.Settings.Secure.getString(getContentResolver(),
+                    android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            return val != null && val.contains(srv);
+        }
+        @JavascriptInterface public void openAccessibility() {
+            main.post(() -> { try { startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)); } catch (Exception e) {} });
+        }
+        @JavascriptInterface public boolean isNotificationOn() {
+            String flat = android.provider.Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+            return flat != null && flat.contains(getPackageName());
+        }
+        @JavascriptInterface public void openNotificationSettings() {
+            main.post(() -> { try { startActivity(new Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)); } catch (Exception e) {} });
+        }
+        @JavascriptInterface public boolean isBotRunning() { return WeChatBotService.isRunning(MainActivity.this); }
+        @JavascriptInterface public void setBotRunning(boolean on) { WeChatBotService.setRunning(MainActivity.this, on); }
+        @JavascriptInterface public boolean isXposedActive() {
+            return false;  // Xposed 无法从模块自身检测，需在 LSPosed Manager 查看
+        }
+        @JavascriptInterface public boolean isTaskReaderServiceRunning() {
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (am != null) {
+                for (android.app.ActivityManager.RunningServiceInfo s : am.getRunningServices(100)) {
+                    if (TaskReaderService.class.getName().equals(s.service.getClassName())) return true;
+                }
+            }
+            return false;
+        }
+        @JavascriptInterface public void startTaskReaderService() {
+            main.post(() -> {
+                Intent svc = new Intent(MainActivity.this, TaskReaderService.class);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(svc);
+                } else {
+                    startService(svc);
+                }
+            });
+        }
+    }
+
+    @Override public void onBackPressed() { if (webView != null && webView.canGoBack()) webView.goBack(); else super.onBackPressed(); }
 }
